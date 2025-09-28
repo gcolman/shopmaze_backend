@@ -3,9 +3,12 @@
 /**
  * Invoice Poller Module
  * Polls S3 bucket for invoice PDFs and stores them as base64 when found
+ * Also stores invoices in local filesystem for persistence
  */
 
 const { S3Client } = require('./s3');
+const fs = require('fs').promises;
+const path = require('path');
 
 class InvoicePoller {
     constructor(options = {}) {
@@ -13,6 +16,7 @@ class InvoicePoller {
             pollingInterval: options.pollingInterval || 10000, // 10 seconds default
             bucketName: options.bucketName || process.env.INVOICE_BUCKET || 'ingest',
             pollForInvoices: options.maxRetries !== undefined ? options.maxRetries : Infinity, // Poll indefinitely by default
+            invoiceStorageDir: options.invoiceStorageDir || path.join(process.cwd(), 'invoices'), // Local storage directory
             ...options
         };
 
@@ -37,8 +41,12 @@ class InvoicePoller {
             await this.s3Client.connect();
             this.isConnected = true;
             
+            // Ensure invoice storage directory exists
+            await this.ensureStorageDirectory();
+            
             console.log(`📄 Invoice Poller initialized successfully`);
             console.log(`📄 Polling bucket: ${this.config.bucketName}`);
+            console.log(`📄 Invoice storage directory: ${this.config.invoiceStorageDir}`);
             console.log(`📄 Polling interval: ${this.config.pollingInterval}ms`);
             console.log(`📄 Max retries: ${this.config.maxRetries === Infinity ? 'unlimited (polling indefinitely)' : this.config.maxRetries}`);
             
@@ -60,6 +68,127 @@ class InvoicePoller {
     }
 
     /**
+     * Ensure the invoice storage directory exists
+     * @private
+     */
+    async ensureStorageDirectory() {
+        try {
+            await fs.access(this.config.invoiceStorageDir);
+            console.log(`📁 Invoice storage directory exists: ${this.config.invoiceStorageDir}`);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log(`📁 Creating invoice storage directory: ${this.config.invoiceStorageDir}`);
+                await fs.mkdir(this.config.invoiceStorageDir, { recursive: true });
+                console.log(`✅ Invoice storage directory created successfully`);
+            } else {
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * Save invoice to filesystem
+     * @param {string} invoiceNumber - Invoice number
+     * @param {Object} invoiceData - Invoice data to save
+     * @private
+     */
+    async saveInvoiceToFilesystem(invoiceNumber, invoiceData) {
+        try {
+            const filename = `${invoiceNumber}.json`;
+            const filepath = path.join(this.config.invoiceStorageDir, filename);
+            
+            // Create a copy of the data with filesystem metadata
+            const fileData = {
+                ...invoiceData,
+                savedAt: new Date().toISOString(),
+                filePath: filepath
+            };
+            
+            await fs.writeFile(filepath, JSON.stringify(fileData, null, 2), 'utf8');
+            console.log(`💾 Invoice ${invoiceNumber} saved to filesystem: ${filepath}`);
+            
+            return filepath;
+        } catch (error) {
+            console.error(`❌ Error saving invoice ${invoiceNumber} to filesystem: ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
+     * Fetch invoice by invoice number from filesystem
+     * @param {string} invoiceNumber - Invoice number to fetch
+     * @returns {Object|null} Invoice data or null if not found
+     */
+    async fetchInvoiceFromFilesystem(invoiceNumber) {
+        try {
+            const filename = `${invoiceNumber}.json`;
+            const filepath = path.join(this.config.invoiceStorageDir, filename);
+            
+            const data = await fs.readFile(filepath, 'utf8');
+            const invoiceData = JSON.parse(data);
+            
+            console.log(`📄 Fetched invoice ${invoiceNumber} from filesystem`);
+            return invoiceData;
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log(`📄 Invoice ${invoiceNumber} not found in filesystem`);
+                return null;
+            } else {
+                console.error(`❌ Error reading invoice ${invoiceNumber} from filesystem: ${error.message}`);
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * List all invoices stored in filesystem
+     * @returns {Array} Array of invoice numbers stored in filesystem
+     */
+    async listInvoicesInFilesystem() {
+        try {
+            const files = await fs.readdir(this.config.invoiceStorageDir);
+            const invoiceNumbers = files
+                .filter(file => file.endsWith('.json'))
+                .map(file => file.replace('.json', ''));
+            
+            console.log(`📄 Found ${invoiceNumbers.length} invoices in filesystem`);
+            return invoiceNumbers;
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log(`📄 Invoice storage directory does not exist`);
+                return [];
+            } else {
+                console.error(`❌ Error listing invoices from filesystem: ${error.message}`);
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * Delete invoice from filesystem
+     * @param {string} invoiceNumber - Invoice number to delete
+     * @returns {boolean} True if deleted, false if not found
+     */
+    async deleteInvoiceFromFilesystem(invoiceNumber) {
+        try {
+            const filename = `${invoiceNumber}.json`;
+            const filepath = path.join(this.config.invoiceStorageDir, filename);
+            
+            await fs.unlink(filepath);
+            console.log(`🗑️ Deleted invoice ${invoiceNumber} from filesystem`);
+            return true;
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log(`📄 Invoice ${invoiceNumber} not found in filesystem for deletion`);
+                return false;
+            } else {
+                console.error(`❌ Error deleting invoice ${invoiceNumber} from filesystem: ${error.message}`);
+                throw error;
+            }
+        }
+    }
+
+    /**
      * Register an invoice number for polling
      * @param {string} invoiceNumber - The invoice number to watch for
      * @param {string} playerId - The player ID associated with the invoice
@@ -72,6 +201,7 @@ class InvoicePoller {
         // Check if already processed
         if (this.processedInvoices.has(invoiceNumber)) {
             console.log(`📄 Invoice ${invoiceNumber} already processed`);
+            //removed for testing, re-instate for production
             //return this.processedInvoices.get(invoiceNumber);
         }
 
@@ -101,10 +231,31 @@ class InvoicePoller {
     /**
      * Get processed invoice data
      * @param {string} invoiceNumber - The invoice number to retrieve
-     * @returns {Object|null} Processed invoice data or null if not found
+     * @returns {Promise<Object|null>} Processed invoice data or null if not found
      */
-    getProcessedInvoice(invoiceNumber) {
-        return this.processedInvoices.get(invoiceNumber) || null;
+    async getProcessedInvoice(invoiceNumber) {
+        // First check in-memory cache
+        let invoiceData = this.processedInvoices.get(invoiceNumber);
+        
+        if (invoiceData) {
+            return invoiceData;
+        }
+        
+        // If not in memory, try to fetch from filesystem
+        try {
+            invoiceData = await this.fetchInvoiceFromFilesystem(invoiceNumber);
+            
+            // If found in filesystem, load it into memory cache
+            if (invoiceData) {
+                this.processedInvoices.set(invoiceNumber, invoiceData);
+                console.log(`📄 Loaded invoice ${invoiceNumber} from filesystem into memory cache`);
+            }
+            
+            return invoiceData;
+        } catch (error) {
+            console.error(`❌ Error fetching invoice ${invoiceNumber} from filesystem: ${error.message}`);
+            return null;
+        }
     }
 
     /**
@@ -297,6 +448,14 @@ class InvoicePoller {
             };
 
             this.processedInvoices.set(invoiceNumber, processedData);
+
+            // Save to filesystem
+            try {
+                await this.saveInvoiceToFilesystem(invoiceNumber, processedData);
+            } catch (filesystemError) {
+                console.error(`⚠️ Failed to save invoice ${invoiceNumber} to filesystem: ${filesystemError.message}`);
+                // Continue processing even if filesystem save fails
+            }
 
             console.log(`✅ Invoice ${invoiceNumber} processed and stored successfully for player ${registrationData.playerId}`);
 
