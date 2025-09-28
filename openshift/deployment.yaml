@@ -1,0 +1,191 @@
+# ShopMaze Backend - Simple OpenShift Deployment
+# Creates deployment, service, and route for both HTTP and WebSocket servers
+#
+# Usage: oc apply -f deployment.yaml
+
+---
+# HTTP Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shopmaze-http
+  labels:
+    app: shopmaze-http
+    service: shopmaze-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shopmaze-http
+  template:
+    metadata:
+      labels:
+        app: shopmaze-http
+        service: shopmaze-backend
+    spec:
+      containers:
+      - name: http-server
+        image: quay.io/uk_redhatdemo/summitconnect/redhat-quest-httpserver:latest
+        ports:
+        - containerPort: 8099
+          name: http
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: HTTP_PORT
+          value: "8099"
+        - name: HTTP_HOST
+          value: https://shopmaze-http-route-gcolman1-dev.apps.cluster-l7rns.l7rns.sandbox1431.opentlc.com
+        - name: WS_PORT
+          value: "8080"
+        - name: WS_SERVER
+          value: "shopmaze-websocket-service"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8099
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8099
+          initialDelaySeconds: 15
+          periodSeconds: 10
+
+---
+# HTTP Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: shopmaze-http-service
+  labels:
+    app: shopmaze-http
+    service: shopmaze-backend
+spec:
+  selector:
+    app: shopmaze-http
+  ports:
+  - name: http
+    port: 8099
+    targetPort: 8099
+  type: ClusterIP
+
+---
+# HTTP Server Route
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: shopmaze-http-route
+  labels:
+    app: shopmaze-http
+    service: shopmaze-backend
+spec:
+  to:
+    kind: Service
+    name: shopmaze-http-service
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# WebSocket Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shopmaze-websocket
+  labels:
+    app: shopmaze-websocket
+    service: shopmaze-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shopmaze-websocket
+  template:
+    metadata:
+      labels:
+        app: shopmaze-websocket
+        service: shopmaze-backend
+    spec:
+      containers:
+      - name: websocket-server
+        image: quay.io/uk_redhatdemo/summitconnect/redhat-quest-ws-server:latest
+        ports:
+        - containerPort: 8080
+          name: websocket
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: WS_PORT
+          value: "8080"
+        - name: HTTP_PORT
+          value: "8099"
+        - name: HTTP_SERVER
+          value: "shopmaze-http-service"
+        - name: WS_SERVER
+          value: "shopmaze-websocket-service"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+
+---
+# WebSocket Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: shopmaze-websocket-service
+  labels:
+    app: shopmaze-websocket
+    service: shopmaze-backend
+spec:
+  selector:
+    app: shopmaze-websocket
+  ports:
+  - name: websocket
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
+  sessionAffinity: ClientIP
+
+---
+# WebSocket Server Route
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: shopmaze-websocket-route
+  labels:
+    app: shopmaze-websocket
+    service: shopmaze-backend
+spec:
+  to:
+    kind: Service
+    name: shopmaze-websocket-service
+  port:
+    targetPort: websocket
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

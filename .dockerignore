@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.DS_Store
+*.log
+coverage/
+.nyc_output/
+docker-compose.yml
+.dockerignore
+Dockerfile
+

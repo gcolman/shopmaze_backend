@@ -1,0 +1,30 @@
+{
+  "name": "shopmaze-backend",
+  "version": "1.0.0",
+  "description": "Backend API and WebSocket server for ShopMaze game",
+  "main": "src/websocket-server.js",
+  "scripts": {
+    "start": "npm run start:ws",
+    "start:ws": "node src/websocket-server.js",
+    "start:http": "node src/http-server.js",
+    "start:both": "node src/start-servers.js",
+    "dev": "npm run start:both",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "minio": "^8.0.6",
+    "ws": "^8.18.3",
+    "pdf2pic": "^2.1.4",
+    "fs-extra": "^11.1.1"
+  },
+  "keywords": [
+    "websocket",
+    "game",
+    "backend",
+    "api",
+    "shopmaze",
+    "red-hat"
+  ],
+  "author": "ShopMaze Team",
+  "license": "MIT"
+}
