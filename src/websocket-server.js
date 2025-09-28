@@ -58,8 +58,8 @@ async function initializeInvoicePoller() {
         // Initialize the invoice poller
         await invoicePoller.initialize();
 
-        // Set up the callback to send invoices via websocket when processed
-        invoicePoller.setInvoiceProcessedCallback(sendInvoiceToPlayer);
+        // Set up the callback to send invoice ready notifications via websocket when processed
+        invoicePoller.setInvoiceProcessedCallback(sendInvoiceReadyNotification);
         
         console.log(`✅ Invoice Poller integration setup complete`);
         
@@ -153,7 +153,12 @@ async function processOrder(orderData) {
     }
 }
 
-// >>>>>>>>>>>
+/*
+* Register an invoice for polling
+* @param {string} invoiceNumber - The invoice number to register
+* @param {string} playerId - The player ID associated with the invoice
+* @returns {void}
+*/
 function registerInvoice(invoiceNumber, playerId) {
     if (invoicePoller) {
         try {
@@ -248,6 +253,53 @@ function getConnectedUsers() {
 }
 
 /**
+ * Send invoice ready notification to a specific player via websocket
+ * @param {string} invoiceNumber - The invoice number
+ * @param {Object} processedData - The processed invoice data
+ * @returns {Promise<boolean>} True if message was sent, false if user not found
+ */
+async function sendInvoiceReadyNotification(invoiceNumber, processedData) {
+    try {
+        const playerId = processedData.playerId;
+        
+        if (!playerId) {
+            console.log(`❌ No playerId found in processed invoice data for ${invoiceNumber}`);
+            return false;
+        }
+
+        const ws = userConnections.get(playerId);
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            console.log(`❌ Player ${playerId} not connected or connection not open for invoice ${invoiceNumber}`);
+            return false;
+        }
+
+        // Create invoice ready notification message for the player
+        const invoiceReadyMessage = {
+            type: 'invoice_ready',
+            invoiceNumber: invoiceNumber,
+            filename: processedData.filename,
+            fileSize: processedData.fileSize,
+            processedAt: processedData.processedAt,
+            message: `Your invoice ${invoiceNumber} has been processed and is ready for download`,
+            timestamp: new Date().toISOString(),
+            source: 'invoice-poller'
+        };
+
+        // Send the invoice ready notification to the specific player
+        ws.send(JSON.stringify(invoiceReadyMessage));
+        console.log(`✅ Invoice ready notification for ${invoiceNumber} sent to player ${playerId} via websocket`);
+        console.log(`   Filename: ${processedData.filename}`);
+        console.log(`   File Size: ${processedData.fileSize} bytes`);
+        
+        return true;
+
+    } catch (error) {
+        console.error(`❌ Error sending invoice ready notification for ${invoiceNumber}:`, error.message);
+        return false;
+    }
+}
+
+/**
  * Send processed invoice to a specific player via websocket
  * @param {string} invoiceNumber - The invoice number
  * @param {Object} processedData - The processed invoice data with base64 content
@@ -297,83 +349,6 @@ async function sendInvoiceToPlayer(invoiceNumber, processedData) {
         return false;
     }
 }
-
-/**
- * Send invoice data to all connected clients
- * Fetches invoices from HTTP server and sends each client their specific invoice
- * @returns {Promise} Promise that resolves when all invoices are sent
- */
-/* xxxx async function sendInvoicesToClients() {
-    try {
-        console.log(`📄 Starting invoice distribution to all connected clients...`);
-        
-        // Fetch all invoices from HTTP server
-        const invoicesResponse = await getInvoices();
-        const allInvoices = invoicesResponse.data.data;
-        
-        if (!allInvoices || allInvoices.length === 0) {
-            console.log(`📄 No invoices found to send`);
-            return 0;
-        }
-        
-        // Create a map of userId to invoice for quick lookup
-        const invoiceMap = new Map();
-        allInvoices.forEach(invoice => {
-            console.log("INVOICE ", invoice);
-            invoiceObject = JSON.parse(invoice);
-            const userId = invoiceObject.userId || invoiceObject.playerId;
-            if (userId) {
-                invoiceMap.set(userId, invoiceObject);
-            }
-        });
-        
-        console.log(`📄 Created invoice map for ${invoiceMap.size} users`);
-        
-        let sentCount = 0;
-        let notFoundCount = 0;
-        
-        // Iterate through all connected users
-        userConnections.forEach((ws, userId) => {
-            //console.log("LOOKING TO MATCHUSER ID: " + userId);
-            if (ws.readyState === WebSocket.OPEN) {
-                const userInvoice = invoiceMap.get(userId);
-                
-                if (userInvoice) {
-                    // Send the user's specific invoice
-
-                    ws.send(JSON.stringify({
-                        type: 'invoice_data',
-                        invoice: userInvoice,
-                        message: 'Your invoice data',
-                        timestamp: new Date().toISOString(),
-                        source: 'server'
-                    }));
-                    sentCount++;
-                    console.log(`📄 Sent invoice ${userInvoice || 'N/A'} to user ${userId}`);
-                } else {
-                    // Send message that no invoice was found for this user
-                    ws.send(JSON.stringify({
-                        type: 'invoice_not_found',
-                        userId: userId,
-                        message: 'No invoice found for your user ID',
-                        timestamp: new Date().toISOString(),
-                        source: 'server'
-                    }));
-                    notFoundCount++;
-                    console.log(`📄 No invoice found for user ${userId}`);
-                }
-            }
-        });
-        
-        console.log(`📄 Invoice distribution complete: ${sentCount} invoices sent, ${notFoundCount} users with no invoice`);
-        return sentCount;
-        
-    } catch (error) {
-        console.error(`❌ Error sending invoices to clients:`, error.message);
-        throw error;
-    }
-}*/
-
 
 
 server.on('connection', (ws, request) => {
