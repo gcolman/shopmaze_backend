@@ -14,7 +14,7 @@ class InvoicePoller {
     constructor(options = {}) {
         this.config = {
             pollingInterval: options.pollingInterval || 10000, // 10 seconds default
-            bucketName: options.bucketName || process.env.INVOICE_BUCKET || 'ingest',
+            bucketName: options.bucketName || process.env.INVOICE_BUCKET || 'invoices',
             pollForInvoices: options.maxRetries !== undefined ? options.maxRetries : Infinity, // Poll indefinitely by default
             invoiceStorageDir: options.invoiceStorageDir || path.join(process.cwd(), 'invoices'), // Local storage directory
             ...options
@@ -121,8 +121,9 @@ class InvoicePoller {
      */
     async fetchInvoiceFromFilesystem(invoiceNumber) {
         try {
-            const filename = `${invoiceNumber}.json`;
+            const filename = `invoice_${invoiceNumber}.json`;
             const filepath = path.join(this.config.invoiceStorageDir, filename);
+            console.log(`📄 Fetching invoice ${invoiceNumber} from filesystem: ${filepath}`);
             
             const data = await fs.readFile(filepath, 'utf8');
             const invoiceData = JSON.parse(data);
@@ -194,6 +195,10 @@ class InvoicePoller {
      * @param {string} playerId - The player ID associated with the invoice
      */
     registerInvoice(invoiceNumber, playerId) {
+
+        //FOR TESTING INVOIVE DISPLAY ONLY REMOVE AS THIS RETURNS THE SAME INVOICE EVERY TIME
+        invoiceNumber = 'invoice_1003';
+
         if (!invoiceNumber || !playerId) {
             throw new Error('Invoice number and player ID are required');
         }
@@ -238,6 +243,7 @@ class InvoicePoller {
         let invoiceData = this.processedInvoices.get(invoiceNumber);
         
         if (invoiceData) {
+            console.log(`📄 Invoice ${invoiceNumber} found in memory cache`);
             return invoiceData;
         }
         

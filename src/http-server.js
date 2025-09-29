@@ -20,9 +20,10 @@ const orderProcessor = new OrderProcessor();
 const wsClient = new WebSocketClient({
     url: `ws://${WS_SERVER}:${WS_PORT}/game-control`,
     userId: 'http-server',
-    autoReconnect: true,
-    maxReconnectAttempts: 5,
-    reconnectDelay: 2000
+    autoReconnect: false, // Disable auto-reconnect, we use manual retry logic
+    timeout: 5000, // Shorter timeout for faster retry
+    heartbeatInterval: 30000, // Send ping every 30 seconds
+    enableHeartbeat: true // Enable heartbeat monitoring
 });
 
 const httpServer = http.createServer(async (req, res) => {
@@ -137,6 +138,8 @@ const httpServer = http.createServer(async (req, res) => {
 
     } else if (parsedUrl.pathname === '/health') {
         // Health check endpoint for Docker
+        const wsStatus = wsClient.getStatus();
+        
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
             status: 'healthy',
@@ -144,6 +147,14 @@ const httpServer = http.createServer(async (req, res) => {
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
             leaderboardEntries: dataStore.getLeaderboardCount(),
+            websocket: {
+                isConnected: wsStatus.isConnected,
+                isReconnecting: wsStatus.isReconnecting,
+                reconnectAttempts: wsStatus.reconnectAttempts,
+                queuedMessages: wsStatus.queuedMessages,
+                uptime: wsStatus.uptime,
+                url: wsStatus.url
+            }
         }));
     } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -151,23 +162,74 @@ const httpServer = http.createServer(async (req, res) => {
     }
 });
 
-httpServer.listen(HTTP_PORT, async () => {
+// Set up WebSocket event listeners for monitoring before starting connection attempts
+wsClient.on('connected', () => {
+    console.log(`🔗 WebSocket connected successfully to invoice registration service`);
+    const status = wsClient.getStatus();
+    if (status.queuedMessages > 0) {
+        console.log(`📦 Processing ${status.queuedMessages} queued messages...`);
+    }
+});
+
+wsClient.on('disconnected', (info) => {
+    console.log(`🔌 WebSocket disconnected: ${info.reason} (uptime: ${info.uptime || 0}s)`);
+    const status = wsClient.getStatus();
+    if (status.queuedMessages > 0) {
+        console.log(`📦 ${status.queuedMessages} messages queued for retry when reconnected`);
+    }
+    
+    // Try to reconnect (fewer attempts for reconnection)
+    console.log(`🔄 Attempting to reconnect...`);
+    setTimeout(async () => {
+        try {
+            await wsClient.connect(10); // Try 10 times for reconnection
+            console.log(`✅ Reconnected to WebSocket server`);
+        } catch (error) {
+            console.log(`❌ Failed to reconnect after 10 attempts, will try again later`);
+        }
+    }, 2000); // Wait 2 seconds before starting reconnection attempts
+});
+
+wsClient.on('error', (error) => {
+    console.error(`❌ WebSocket error: ${error.message}`);
+});
+
+wsClient.on('maxReconnectAttemptsReached', () => {
+    console.error(`❌ WebSocket max reconnection attempts reached - manual intervention may be required`);
+});
+
+// Initialize WebSocket connection using client's built-in retry logic
+async function initializeWebSocketConnection() {
+    try {
+        await wsClient.connect(30); // Try 30 times with 1-second delays
+        console.log(`✅ Connected to WebSocket server for invoice events`);
+    } catch (error) {
+        console.error(`❌ Failed to connect to WebSocket server after 30 attempts`);
+        console.log(`📦 Invoice events will be queued until WebSocket server becomes available`);
+    }
+}
+
+httpServer.listen(HTTP_PORT, () => {
     console.log(`📊 Red Hat Quest HTTP API Server running on http://localhost:${HTTP_PORT}`);
     console.log(`🔗 Leaderboard data: http://localhost:${HTTP_PORT}/leaderboard`);
     console.log(`📄 Invoices data: http://localhost:${HTTP_PORT}/invoices`);
     console.log(`📄 Invoice stats: http://localhost:${HTTP_PORT}/invoices/stats`);
     console.log(`📦 Process order: http://localhost:${HTTP_PORT}/process-order`);
     console.log(`💚 Health check: http://localhost:${HTTP_PORT}/health`);
+    console.log(`✅ HTTP Server started successfully`);
     
-    // Initialize WebSocket connection to websocket-server
-    try {
-        console.log(`🔌 Connecting to WebSocket server for invoice registration...`);
-        await wsClient.connect();
-        console.log(`✅ Connected to WebSocket server for invoice events`);
-    } catch (error) {
-        console.error(`❌ Failed to connect to WebSocket server: ${error.message}`);
-        console.log(`📦 Invoice events will be queued until connection is established`);
-    }
+    // Start WebSocket connection attempt asynchronously (doesn't block server startup)
+    initializeWebSocketConnection();
+
+    // Simple periodic monitoring (every 5 minutes)
+    setInterval(() => {
+        const status = wsClient.getStatus();
+        if (!status.isConnected) {
+            console.log(`⚠️ WebSocket not connected - queued messages: ${status.queuedMessages}`);
+        } else {
+            console.log(`💓 WebSocket healthy - uptime: ${status.uptime}s, queued: ${status.queuedMessages}`);
+        }
+    }, 5 * 60 * 1000); // 5 minutes
 });
 
 // Handle server shutdown gracefully

@@ -14,7 +14,7 @@ async function testInvoicePoller() {
     // Create invoice poller instance
     const poller = new InvoicePoller({
         pollingInterval: 5000, // 5 seconds for testing
-        bucketName: 'ingest',
+        bucketName: 'invoice',
         maxRetries: 5
     });
 
