@@ -60,7 +60,7 @@ class DataStore {
             };
             
             this.addLeaderboardEntry(leaderboardEntry);
-            this.updateInvoice(gameEvent);
+            //this.updateInvoice(gameEvent);
             
         } catch (error) {
             console.error('❌ Error processing game over event for leaderboard:', error);

@@ -89,33 +89,35 @@ const httpServer = http.createServer(async (req, res) => {
                 console.log(`✅ Order processed successfully: ${orderResult.orderId} for ${orderResult.customerName} (${orderResult.customerEmail})`);
                 
                 // Access backend response data and send invoice registration
+                // Send expected invoice registration to WebSocket server
                 if (orderResult.backendResponse && orderResult.backendResponse.po) {
                     console.log(`📊 Backend PO: ${orderResult.backendResponse.po}, Total: ${orderResult.backendResponse.summary?.totalAmount}`);
                     
-                    // Send invoice_register event via WebSocket
+                    // Send expected invoice registration via WebSocket
                     try {
-                        const invoiceRegisterMessage = {
-                            type: 'invoice_register',
+                        const expectedInvoiceMessage = {
+                            type: 'register_expected_invoice',
                             userId: 'http-server', // Required by websocket-server
-                            //po: orderResult.backendResponse.po,
-                            po: 1030,
-                            playerId: orderResult.customerName, // Use email as playerId
-                            customerName: orderResult.customerName,
-                            customerEmail: orderResult.customerEmail,
-                            orderId: orderResult.orderId,
-                            totalAmount: orderResult.backendResponse.summary?.totalAmount,
+                            invoiceNumber: orderResult.backendResponse.po.toString(),
+                            playerId: orderResult.customerName, 
+                            orderData: {
+                                customerName: orderResult.customerName,
+                                customerEmail: orderResult.customerEmail,
+                                orderId: orderResult.orderId,
+                                summary: orderResult.backendResponse.summary
+                            },
                             timestamp: new Date().toISOString()
                         };
                         
-                        const sent = wsClient.send(invoiceRegisterMessage);
+                        const sent = wsClient.send(expectedInvoiceMessage);
                         if (sent) {
-                            console.log(`📤 Sent invoice_register event for PO ${orderResult.backendResponse.po} to WebSocket server`);
+                            console.log(`📤 Sent expected invoice registration for PO ${orderResult.backendResponse.po} to WebSocket server`);
                         } else {
-                            console.log(`📦 Queued invoice_register event for PO ${orderResult.backendResponse.po} (WebSocket not connected)`);
+                            console.log(`📦 Queued expected invoice registration for PO ${orderResult.backendResponse.po} (WebSocket not connected)`);
                         }
                         
                     } catch (wsError) {
-                        console.error(`❌ Error sending invoice_register event: ${wsError.message}`);
+                        console.error(`❌ Error sending expected invoice registration: ${wsError.message}`);
                     }
                 }
                 
@@ -164,7 +166,7 @@ const httpServer = http.createServer(async (req, res) => {
 
 // Set up WebSocket event listeners for monitoring before starting connection attempts
 wsClient.on('connected', () => {
-    console.log(`🔗 WebSocket connected successfully to invoice registration service`);
+    console.log(`🔗 WebSocket connected successfully to game control service`);
     const status = wsClient.getStatus();
     if (status.queuedMessages > 0) {
         console.log(`📦 Processing ${status.queuedMessages} queued messages...`);
@@ -202,10 +204,10 @@ wsClient.on('maxReconnectAttemptsReached', () => {
 async function initializeWebSocketConnection() {
     try {
         await wsClient.connect(30); // Try 30 times with 1-second delays
-        console.log(`✅ Connected to WebSocket server for invoice events`);
+        console.log(`✅ Connected to WebSocket server for game events`);
     } catch (error) {
         console.error(`❌ Failed to connect to WebSocket server after 30 attempts`);
-        console.log(`📦 Invoice events will be queued until WebSocket server becomes available`);
+        console.log(`📦 Game events will be queued until WebSocket server becomes available`);
     }
 }
 

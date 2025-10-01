@@ -25,11 +25,19 @@ console.log('  - start  : Start/Resume the game');
 console.log('  - pause  : Pause the game');
 console.log('  - new    : Create a new game');
 console.log('  - endgame: End the game');
+console.log('  - game-status: Show current game status');
 console.log('');
 
 let connectedClients = new Set();
 let userConnections = new Map(); // Map of userId -> ws object
 let connectionUsers = new Map();  // Map of ws object -> userId (reverse lookup)
+
+// Game status tracking
+let gameStatus = {
+    status: 'start', // Default status: 'start', 'pause', 'end'
+    lastUpdated: new Date().toISOString(),
+    updatedBy: 'system'
+};
 
 // Create invoice poller instance (declare before use)
 let invoicePoller = null;
@@ -44,6 +52,60 @@ const httpClient = new HttpClient({
     timeout: 5000
 });
 
+/**
+ * Send current game status to a specific client or all clients
+ * @param {WebSocket} ws - Specific client to send to, or null for all clients
+ */
+function sendGameStatus(ws = null) {
+    const gameStatusMessage = {
+        type: 'game_status',
+        status: gameStatus.status,
+        lastUpdated: gameStatus.lastUpdated,
+        updatedBy: gameStatus.updatedBy,
+        timestamp: new Date().toISOString(),
+        source: 'websocket-server'
+    };
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        // Send to specific client
+        ws.send(JSON.stringify(gameStatusMessage));
+        console.log(`🎮 Game status (${gameStatus.status}) sent to client`);
+    } else {
+        // Send to all connected clients
+        connectedClients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(gameStatusMessage));
+            }
+        });
+        console.log(`🎮 Game status (${gameStatus.status}) broadcast to ${connectedClients.size} clients`);
+    }
+}
+
+/**
+ * Update game status and broadcast to all clients
+ * @param {string} newStatus - New game status ('start', 'pause', 'end')
+ * @param {string} updatedBy - Who updated the status
+ */
+function updateGameStatus(newStatus, updatedBy = 'unknown') {
+    const validStatuses = ['start', 'pause', 'end'];
+    if (!validStatuses.includes(newStatus)) {
+        console.error(`❌ Invalid game status: ${newStatus}. Valid statuses: ${validStatuses.join(', ')}`);
+        return;
+    }
+
+    const previousStatus = gameStatus.status;
+    gameStatus = {
+        status: newStatus,
+        lastUpdated: new Date().toISOString(),
+        updatedBy: updatedBy
+    };
+
+    console.log(`🎮 Game status changed: ${previousStatus} → ${newStatus} (by ${updatedBy})`);
+    
+    // Broadcast new status to all clients
+    sendGameStatus();
+}
+
 // Initialize invoice poller and set up websocket integration
 async function initializeInvoicePoller() {
     try {
@@ -51,7 +113,7 @@ async function initializeInvoicePoller() {
         
         invoicePoller = new InvoicePoller({
             pollingInterval: 5000, // Poll every 5 seconds
-            bucketName: process.env.INVOICE_BUCKET || 'invoices',
+            bucketName: process.env.INVOICE_BUCKET || 'ingest',
             maxRetries: 'Infinity'
         });
 
@@ -153,29 +215,6 @@ async function processOrder(orderData) {
     }
 }
 
-/*
-* Register an invoice for polling
-* @param {string} invoiceNumber - The invoice number to register
-* @param {string} playerId - The player ID associated with the invoice
-* @returns {void}
-*/
-function registerInvoice(invoiceNumber, playerId) {
-    if (invoicePoller) {
-        try {
-            const result = invoicePoller.registerInvoice(invoiceNumber, playerId);
-            if (result) {
-                console.log(`✅ Invoice ${invoiceNumber} was already processed for player ${playerId}`);
-            } else {
-                console.log(`📄 Registered invoice ${invoiceNumber} for player ${playerId} for polling`);
-            }
-        } catch (error) {
-            console.log(`❌ Failed to register invoice: ${error.message}`);
-        }
-    } else {
-        console.log(`❌ Invoice Poller not initialized`);
-    }
-    return;
-}
 
 /**
  * Register a user connection
@@ -258,15 +297,22 @@ function getConnectedUsers() {
  * @param {Object} processedData - The processed invoice data
  * @returns {Promise<boolean>} True if message was sent, false if user not found
  */
-async function sendInvoiceReadyNotification(invoiceNumber, processedData) {
+async function  sendInvoiceReadyNotification(invoiceNumber, processedData) {
     try {
+        // TESTING - this had been taken out so that I can test with returning an invoice 10003 eveery time 
+        // remove this as we want the user related to the invocie to be returned as part of the saved processdata 
+        // with the actual requesting playerID    
         const playerId = processedData.playerId;
-        
+
+        //const playerId = invoicePoller.getPlayerIdForInvoice(invoiceNumber);
+
+        console.log(`📄 Sending invoice ready notification to player ${playerId} for invoice ${invoiceNumber}`);
         if (!playerId) {
             console.log(`❌ No playerId found in processed invoice data for ${invoiceNumber}`);
             return false;
         }
 
+        //this is stopping the testing as it is fetching the playerid from the stored invoice json
         const ws = userConnections.get(playerId);
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             console.log(`❌ Player ${playerId} not connected or connection not open for invoice ${invoiceNumber}`);
@@ -277,6 +323,7 @@ async function sendInvoiceReadyNotification(invoiceNumber, processedData) {
         const invoiceReadyMessage = {
             type: 'invoice_ready',
             invoiceNumber: invoiceNumber,
+            //invoiceNumber: '1003',
             filename: processedData.filename,
             fileSize: processedData.fileSize,
             processedAt: processedData.processedAt,
@@ -313,16 +360,33 @@ async function handleInvoiceRequest(invoiceNumber, requestingUserId, ws) {
             return false;
         }
 
-        console.log(`📄 Fetching invoice ${invoiceNumber} for user ${requestingUserId || 'unknown'}`);
+        console.log(`📄 -------- Fetching invoice ${invoiceNumber} for user ${requestingUserId || 'unknown'}`);
 
         // Try to get the invoice from the invoice poller (memory cache or filesystem)
-        const invoiceData = await invoicePoller.getProcessedInvoice(invoiceNumber);
+        const invoiceData = await invoicePoller.getProcessedInvoice(invoiceNumber,requestingUserId);
 
         if (!invoiceData) {
             console.log(`❌ Invoice ${invoiceNumber} not found in storage`);
             return false;
         }
 
+
+        // Get summary data from expected invoices if available
+        let expectedInvoiceData = invoicePoller.expectedInvoices?.get(invoiceNumber);
+        let summary = expectedInvoiceData?.summary || null;
+        
+        // If no expected invoice data found, try to find by playerId
+        if (!expectedInvoiceData && invoiceData.playerId) {
+            console.log(`📊 No expected invoice for ${invoiceNumber}, searching by playerId: ${invoiceData.playerId}`);
+            expectedInvoiceData = invoicePoller.getExpectedInvoiceDataForPlayer(invoiceData.playerId);
+            summary = expectedInvoiceData?.summary || null;
+        }
+        
+        console.log(`📊 Expected invoice data found:`, expectedInvoiceData ? 'Yes' : 'No');
+        console.log(`📊 Summary data available:`, summary ? 'Yes' : 'No');
+        if (summary) {
+            console.log(`📊 Summary total: ${summary.totalAmount}`);
+        }
 
         // Create full invoice message with base64 data for display
         const invoiceMessage = {
@@ -335,6 +399,7 @@ async function handleInvoiceRequest(invoiceNumber, requestingUserId, ws) {
             fileSize: invoiceData.fileSize,
             processedAt: invoiceData.processedAt,
             s3Metadata: invoiceData.s3Metadata,
+            summary: summary,
             message: `Invoice ${invoiceNumber} retrieved successfully`,
             timestamp: new Date().toISOString(),
             source: 'invoice-request'
@@ -355,58 +420,12 @@ async function handleInvoiceRequest(invoiceNumber, requestingUserId, ws) {
     }
 }
 
+
 /**
- * Send processed invoice to a specific player via websocket
- * @param {string} invoiceNumber - The invoice number
- * @param {Object} processedData - The processed invoice data with base64 content
- * @returns {Promise<boolean>} True if message was sent, false if user not found
+ * 
+ * HAANDLE MESSAGES FROM CLIENTS
+ *
  */
-async function sendInvoiceToPlayer(invoiceNumber, processedData) {
-    try {
-        const playerId = processedData.playerId;
-        
-        if (!playerId) {
-            console.log(`❌ No playerId found in processed invoice data for ${invoiceNumber}`);
-            return false;
-        }
-
-        const ws = userConnections.get(playerId);
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            console.log(`❌ Player ${playerId} not connected or connection not open for invoice ${invoiceNumber}`);
-            return false;
-        }
-
-        // Create invoice message for the player
-        const invoiceMessage = {
-            type: 'invoice_pdf',
-            invoiceNumber: invoiceNumber,
-            filename: processedData.filename,
-            mimeType: 'application/pdf',
-            base64Data: processedData.base64Data,
-            fileSize: processedData.fileSize,
-            processedAt: processedData.processedAt,
-            s3Metadata: processedData.s3Metadata,
-            message: `Your invoice ${invoiceNumber} has been processed and is ready`,
-            timestamp: new Date().toISOString(),
-            source: 'invoice-poller'
-        };
-
-        // Send the invoice to the specific player
-        ws.send(JSON.stringify(invoiceMessage));
-        console.log(`✅ Invoice ${invoiceNumber} sent to player ${playerId} via websocket`);
-        console.log(`   Filename: ${processedData.filename}`);
-        console.log(`   File Size: ${processedData.fileSize} bytes`);
-        console.log(`   Base64 Length: ${processedData.base64Data.length} characters`);
-        
-        return true;
-
-    } catch (error) {
-        console.error(`❌ Error sending invoice ${invoiceNumber} via websocket: ${error.message}`);
-        return false;
-    }
-}
-
-
 server.on('connection', (ws, request) => {
     const clientInfo = {
         ip: request.socket.remoteAddress,
@@ -423,6 +442,9 @@ server.on('connection', (ws, request) => {
         message: 'Connected to Red Hat Quest Control Server',
         availableCommands: ['start', 'pause', 'new']
     }));
+
+    // Send current game status to new client
+    sendGameStatus(ws);
 
     ws.on('message', (data) => {
         try {
@@ -447,19 +469,63 @@ server.on('connection', (ws, request) => {
                 }));
                 return;
             }
-     
-            // Handle an invoice message that is sent by the http server when an invoice number has ben generated. We use this to register the invoice number for polling.
-            if (messageData.type === 'invoice_register' && messageData.userId) {
-                registerInvoice(messageData.po, messageData.playerId);
-                ws.send(JSON.stringify({
-                    type: 'invoice_register_response',
-                    status: 'success',
-                    invoiceNumber: messageData.po,
-                    message: `Invoice ${messageData.po} for ${messageData.playerId} player  registered successfully`,
-                    timestamp: new Date().toISOString()
-                }));
+
+            // Handle expected invoice registration from HTTP server
+            if (messageData.type === 'register_expected_invoice' && messageData.userId) {
+                console.log(`📄 Registering expected invoice ${messageData.invoiceNumber} for player ${messageData.playerId}`);
+                console.log(`📄 Summary in message:`, messageData.orderData?.summary ? 'Yes' : 'No');
+                if (messageData.orderData?.summary) {
+                    console.log(`📄 Summary total: ${messageData.orderData.summary.totalAmount}`);
+                }
+                if (!invoicePoller) {
+                    console.log(`❌ Invoice poller not initialized - cannot register expected invoice ${messageData.invoiceNumber}`);
+                    ws.send(JSON.stringify({
+                        type: 'register_expected_invoice_response',
+                        status: 'error',
+                        invoiceNumber: messageData.invoiceNumber,
+                        message: 'Invoice poller not initialized',
+                        timestamp: new Date().toISOString()
+                    }));
+                    return;
+                }
+
+                try {
+                    // Pass the summary from orderData to registerExpectedInvoice
+                    const orderDataWithSummary = {
+                        ...messageData.orderData,
+                        summary: messageData.orderData?.summary
+                    };
+                    
+                    invoicePoller.registerExpectedInvoice(
+                        messageData.invoiceNumber,
+                        //HARDCODED FOR TESTING
+                        //'1003',
+                        messageData.playerId,
+                        orderDataWithSummary
+                    );
+
+                    ws.send(JSON.stringify({
+                        type: 'register_expected_invoice_response',
+                        status: 'success',
+                        invoiceNumber: messageData.invoiceNumber,
+                        playerId: messageData.playerId,
+                        message: `Expected invoice ${messageData.invoiceNumber} registered successfully`,
+                        timestamp: new Date().toISOString()
+                    }));
+                } catch (error) {
+                    console.error(`❌ Error registering expected invoice: ${error.message}`);
+                    ws.send(JSON.stringify({
+                        type: 'register_expected_invoice_response',
+                        status: 'error',
+                        invoiceNumber: messageData.invoiceNumber,
+                        error: error.message,
+                        message: 'Failed to register expected invoice',
+                        timestamp: new Date().toISOString()
+                    }));
+                }
                 return;
-            }            
+            }
+     
 
             // Process game over events by forwarding to HTTP server
             if (messageData.type === 'game_event' && messageData.event === 'game_over') {
@@ -467,6 +533,23 @@ server.on('connection', (ws, request) => {
                 sendGameOverEvent(messageData).catch(error => {
                     console.error('Failed to process game over event:', error.message);
                 });
+            }
+
+            // Handle game status events (start, pause, end)
+            if (messageData.type === 'game_event' && ['start', 'pause', 'end'].includes(messageData.event)) {
+                const userId = connectionUsers.get(ws) || 'unknown-client';
+                console.log(`🎮 Game ${messageData.event} event received from ${userId}`);
+                updateGameStatus(messageData.event, userId);
+                
+                // Send acknowledgment back to sender
+                ws.send(JSON.stringify({
+                    type: 'game_event_response',
+                    event: messageData.event,
+                    status: 'success',
+                    message: `Game ${messageData.event} event processed`,
+                    timestamp: new Date().toISOString()
+                }));
+                return;
             }
             
             // Process order events by forwarding to HTTP server
@@ -485,7 +568,6 @@ server.on('connection', (ws, request) => {
                             itemCount: messageData.items ? messageData.items.length : 0,
                             timestamp: new Date().toISOString()
                         }));
-                        //register on websocket event when the invoice number is available registerInvoice(response.data.orderId, messageData.customerId);
                     })
                     .catch(error => {
                         console.error('Failed to process order:', error.message);
@@ -606,10 +688,9 @@ console.log("CALL TO INITIALIZE INVOICE POLLER");
 initializeInvoicePoller();
 
 console.log('💬 Available commands:');
-console.log('  Game commands: start, pause, new, endgame');
+console.log('  Game commands: start, pause, end, game-status');
 console.log('  HTTP commands: leaderboard, health, raw-get <path>');
 console.log('  User commands: users, send-to <userId> <message>, broadcast <message>');
-console.log('  Invoice commands: send-invoices, invoice, register-invoice <invoiceNumber> <playerId>, invoice-status');
 console.log('  System commands: status, quit');
 console.log('');
 
@@ -651,6 +732,30 @@ function handleCommand(command) {
         }
         return;
     }
+
+    // Game status commands
+    if (command === 'start') {
+        updateGameStatus('start', 'admin-console');
+        return;
+    }
+
+    if (command === 'pause') {
+        updateGameStatus('pause', 'admin-console');
+        return;
+    }
+
+    if (command === 'end' || command === 'endgame') {
+        updateGameStatus('end', 'admin-console');
+        return;
+    }
+
+    if (command === 'game-status') {
+        console.log(`🎮 Current Game Status:`);
+        console.log(`   Status: ${gameStatus.status}`);
+        console.log(`   Last Updated: ${gameStatus.lastUpdated}`);
+        console.log(`   Updated By: ${gameStatus.updatedBy}`);
+        return;
+    }
     
     if (command.startsWith('send-to ')) {
         console.log("Send-to received: " + command);
@@ -679,6 +784,36 @@ function handleCommand(command) {
         return;
     }
     
+    if (command === 'invoice') {
+        console.log('📄 Sending test invoice PDF to all connected clients...');
+        
+        const invoiceMessage = {
+            type: 'invoice_ready',
+            invoiceNumber: '1001',
+            message: `Your invoice 1001 has been processed and is ready for download`,
+            timestamp: new Date().toISOString(),
+        };
+        
+        // Send to all connected clients
+        let sentCount = 0;
+        connectedClients.forEach(ws => {
+            if (ws.readyState === WebSocket.OPEN) {
+                try {
+                    ws.send(JSON.stringify(invoiceMessage));
+                    sentCount++;
+                } catch (error) {
+                    console.error(`❌ Failed to send invoice to client: ${error.message}`);
+                }
+            }
+        });
+        
+        console.log(`✅ Test invoice sent to ${sentCount} connected clients`);
+        console.log(`   Invoice Number: ${invoiceMessage.invoiceNumber}`);
+        console.log(`   File Size: ${invoiceMessage.fileSize} bytes`);
+
+        return;
+    }
+
     if (command.startsWith('broadcast ')) {
         const message = command.substring(10).trim();
         if (!message) {
@@ -764,77 +899,7 @@ function handleCommand(command) {
             });
     } 
     
-    if (command === 'invoice') {
-        console.log('📄 Sending test invoice PDF to all connected clients...');
-        
-        const invoiceMessage = {
-            type: 'invoice_ready',
-            invoiceNumber: '1001',
-            message: `Your invoice 1001 has been processed and is ready for download`,
-            timestamp: new Date().toISOString(),
-        };
-
-        // Create invoice message
-      /*  const invoiceMessage = {
-            type: 'invoice_pdf',
-            filename: 'test-invoice.pdf',
-            mimeType: 'application/pdf',
-            base64Data: testBase64PDF,
-            fileSize: Math.ceil(testBase64PDF.length * 3 / 4), // Approximate original file size
-            timestamp: new Date().toISOString(),
-            invoiceNumber: 'TEST-INV-' + Date.now(),
-            message: 'Test invoice PDF from WebSocket server'
-        };*/
-        
-        // Send to all connected clients
-        let sentCount = 0;
-        connectedClients.forEach(ws => {
-            if (ws.readyState === WebSocket.OPEN) {
-                try {
-                    ws.send(JSON.stringify(invoiceMessage));
-                    sentCount++;
-                } catch (error) {
-                    console.error(`❌ Failed to send invoice to client: ${error.message}`);
-                }
-            }
-        });
-        
-        console.log(`✅ Test invoice sent to ${sentCount} connected clients`);
-        console.log(`   Invoice Number: ${invoiceMessage.invoiceNumber}`);
-        console.log(`   File Size: ${invoiceMessage.fileSize} bytes`);
-
-        return;
-    }
     
-    if (command === 'invoice-status') {
-        if (invoicePoller) {
-            const status = invoicePoller.getStatus();
-            console.log(`📄 Invoice Poller Status:`);
-            console.log(`   Connected: ${status.isConnected}`);
-            console.log(`   Polling: ${status.isPolling}`);
-            console.log(`   Bucket: ${status.bucketName}`);
-            console.log(`   Polling Interval: ${status.pollingInterval}ms`);
-            console.log(`   Registered Invoices: ${status.registeredCount}`);
-            console.log(`   Processed Invoices: ${status.processedCount}`);
-            
-            if (status.registrations.length > 0) {
-                console.log(`   Current Registrations:`);
-                status.registrations.forEach(reg => {
-                    console.log(`     - ${reg.invoiceNumber} (${reg.playerId}) - Retries: ${reg.retryCount}`);
-                });
-            }
-            
-            if (status.processedInvoices.length > 0) {
-                console.log(`   Processed Invoices:`);
-                status.processedInvoices.forEach(inv => {
-                    console.log(`     - ${inv.invoiceNumber} (${inv.playerId}) - ${inv.filename} - ${(inv.fileSize / 1024).toFixed(2)} KB`);
-                });
-            }
-        } else {
-            console.log(`❌ Invoice Poller not initialized`);
-        }
-        return;
-    }
     
     
     else if (command !== '') {
@@ -842,7 +907,6 @@ function handleCommand(command) {
         console.log(`   Game commands: start, pause, new, endgame`);
         console.log(`   HTTP commands: leaderboard, health, raw-get <path>`);
         console.log(`   User commands: users, send-to <userId> <message>, broadcast <message>`);
-        console.log(`   Invoice commands: send-invoices, invoice, register-invoice <invoiceNumber> <playerId>, invoice-status`);
         console.log(`   System commands: status, quit`);
     }
 }

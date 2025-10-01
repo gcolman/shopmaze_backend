@@ -237,23 +237,6 @@ class WebSocketClient extends EventEmitter {
         }
     }
 
-    /**
-     * Send invoice registration message
-     * @param {string} invoiceNumber - Invoice number to register
-     * @param {string} userId - User/player ID
-     * @returns {boolean} True if message was sent
-     */
-    registerInvoice(invoiceNumber, userId) {
-        const message = {
-            type: 'invoice_register',
-            invoiceNumber: invoiceNumber,
-            userId: userId,
-            timestamp: new Date().toISOString(),
-            source: 'websocket-client'
-        };
-
-        return this.send(message);
-    }
 
     /**
      * Send invoice PDF data

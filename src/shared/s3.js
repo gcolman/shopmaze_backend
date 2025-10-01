@@ -87,7 +87,7 @@ class S3Client {
     async listObjects(bucketName, prefix = '', recursive = true) {
         this.ensureConnected();
         try {
-            console.log(`📋 Listing objects in bucket '${bucketName}' with prefix '${prefix}'`);
+            //console.log(`📋 Listing objects in bucket '${bucketName}' with prefix '${prefix}'`);
             
             const objects = [];
             const stream = this.client.listObjects(bucketName, prefix, recursive);
@@ -103,7 +103,7 @@ class S3Client {
                 });
                 
                 stream.on('end', () => {
-                    console.log(`📋 Found ${objects.length} objects in bucket '${bucketName}'`);
+                    //console.log(`📋 Found ${objects.length} objects in bucket '${bucketName}'`);
                     resolve(objects);
                 });
                 
