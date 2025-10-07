@@ -42,6 +42,15 @@ let gameStatus = {
 // Create invoice poller instance (declare before use)
 let invoicePoller = null;
 
+// Map to store expected invoice details: invoiceNumber -> { playerId, summary }
+let expectedInvoices = new Map();
+
+//Map containing original order data
+let allOrders = new Map();
+
+// Store the current player ID that admin is viewing for invoice matching
+let currentAdminPlayer = null;
+
 // Create a direct instance of the generic HttpClient for HTTP server communication
 const httpClient = new HttpClient({
     baseUrl: `http://${HTTP_SERVER}:${HTTP_PORT}`,
@@ -112,9 +121,8 @@ async function initializeInvoicePoller() {
         console.log(`📄 Setting up Invoice Poller integration...`);
         
         invoicePoller = new InvoicePoller({
-            pollingInterval: 5000, // Poll every 5 seconds
-            bucketName: process.env.INVOICE_BUCKET || 'ingest',
-            maxRetries: 'Infinity'
+            pollingInterval: 10000, // Poll every 10 seconds
+            bucketName: process.env.INVOICE_BUCKET || 'invoices'
         });
 
         // Initialize the invoice poller
@@ -220,19 +228,34 @@ async function processOrder(orderData) {
  * Register a user connection
  * @param {string} userId - The user ID
  * @param {WebSocket} ws - The WebSocket connection
+ * @param {string} [playerId] - Optional player ID (for re-registration cases)
  */
-function registerUser(userId, ws) {
-    // Remove any existing connection for this user
-    if (userConnections.has(userId)) {
-        const existingWs = userConnections.get(userId);
+function registerUser(userId, ws, playerId = null) {
+    // Use playerId as the key if provided, otherwise use userId
+    const keyId = playerId || userId;
+    
+    // Remove any existing connection for this user/player
+    if (userConnections.has(keyId)) {
+        const existingWs = userConnections.get(keyId);
+        connectedClients.delete(existingWs);
         connectionUsers.delete(existingWs);
-        console.log(`🔄 User ${userId} reconnected, removing old connection`);
+        
+        console.log(`🔄 User ${keyId} reconnected, removing old connection`);
+        
+        // Close the old connection gracefully if it's still open
+        if (existingWs.readyState === WebSocket.OPEN) {
+            existingWs.close(1000, 'Replaced by new connection');
+        }
     }
     
-    userConnections.set(userId, ws);
-    connectionUsers.set(ws, userId);
-    console.log(`👤 User registered: ${userId} (Total users: ${userConnections.size})`);
+    // Add new connection to all collections
+    connectedClients.add(ws);
+    userConnections.set(keyId, ws);
+    connectionUsers.set(ws, keyId);
+    
+    console.log(`👤 User registered: ${keyId} (userId: ${userId}) (Total users: ${userConnections.size})`);
 }
+
 
 /**
  * Unregister a user connection
@@ -243,6 +266,7 @@ function unregisterUser(ws) {
     if (userId) {
         userConnections.delete(userId);
         connectionUsers.delete(ws);
+        connectedClients.delete(ws);
         //console.log(`👋 User disconnected: ${userId} (Total users: ${userConnections.size})`);
     }
 }
@@ -302,9 +326,23 @@ async function  sendInvoiceReadyNotification(invoiceNumber, processedData) {
         // TESTING - this had been taken out so that I can test with returning an invoice 10003 eveery time 
         // remove this as we want the user related to the invocie to be returned as part of the saved processdata 
         // with the actual requesting playerID    
-        const playerId = processedData.playerId;
-
+        playerId = processedData.playerId;
         //const playerId = invoicePoller.getPlayerIdForInvoice(invoiceNumber);
+        if(!playerId) {
+            //match the invoice and player id from the processedInvoices. 
+            const expectedInvoiceData = expectedInvoices.get(invoiceNumber);
+            if (expectedInvoiceData) {
+                playerId = expectedInvoiceData.playerId;
+                console.log(`📄 sendInvoiceReadyNotification: Found playerId ${playerId} for invoice ${invoiceNumber} in expected invoices`);
+            }
+            
+        }
+        
+        if (!playerId) {
+            console.log(`❌ No playerId found in processed invoice data for ${invoiceNumber}`);
+            return false;
+        }
+
 
         console.log(`📄 Sending invoice ready notification to player ${playerId} for invoice ${invoiceNumber}`);
         if (!playerId) {
@@ -315,7 +353,7 @@ async function  sendInvoiceReadyNotification(invoiceNumber, processedData) {
         //this is stopping the testing as it is fetching the playerid from the stored invoice json
         const ws = userConnections.get(playerId);
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-            console.log(`❌ Player ${playerId} not connected or connection not open for invoice ${invoiceNumber}`);
+            console.log(`❌ Player ${playerId} not connected or connection not open for ${playerId} invoice ${invoiceNumber}`);
             return false;
         }
 
@@ -337,6 +375,26 @@ async function  sendInvoiceReadyNotification(invoiceNumber, processedData) {
         console.log(`✅ Invoice ready notification for ${invoiceNumber} sent to player ${playerId} via websocket`);
         console.log(`   Filename: ${processedData.filename}`);
         console.log(`   File Size: ${processedData.fileSize} bytes`);
+        
+        // Check if admin is viewing this player and send notification to admin as well
+        if (currentAdminPlayer === playerId) {
+            console.log(`🔍 Admin check: currentAdminPlayer=${currentAdminPlayer}, playerId=${playerId}`);
+            const adminWs = userConnections.get('Admin');
+            console.log(`🔍 Admin WebSocket found: ${adminWs ? 'Yes' : 'No'}`);
+            if (adminWs) {
+                console.log(`🔍 Admin WebSocket state: ${adminWs.readyState} (OPEN=${WebSocket.OPEN})`);
+            }
+            
+            if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+                adminWs.send(JSON.stringify(invoiceReadyMessage));
+                console.log(`✅ Invoice ready notification for ${invoiceNumber} also sent to Admin (viewing player ${playerId})`);
+            } else {
+                console.log(`⚠️ Admin not connected or not open, skipping admin notification for invoice ${invoiceNumber}`);
+                console.log(`⚠️ Admin WebSocket state: ${adminWs ? adminWs.readyState : 'null'}`);
+            }
+        } else {
+            console.log(`🔍 Admin check: currentAdminPlayer=${currentAdminPlayer}, playerId=${playerId} (no match)`);
+        }
         
         return true;
 
@@ -446,6 +504,16 @@ server.on('connection', (ws, request) => {
     // Send current game status to new client
     sendGameStatus(ws);
 
+    // Handle ping/pong for heartbeat
+    ws.on('ping', () => {
+        ws.pong();
+        //console.log(`💓 Received ping, sent pong`);
+    });
+
+    ws.on('pong', () => {
+        //console.log(`💓 Received pong`);
+    });
+
     ws.on('message', (data) => {
         try {
             let messageData;
@@ -455,16 +523,41 @@ server.on('connection', (ws, request) => {
                 messageData = { type: 'raw', data: data.toString() };
             }
             
-            //console.log(`📨 Received from client:`, messageData);
+            console.log(`📨 Received from client:`, messageData);
             
             // Handle user connection registration
-            if (messageData.type === 'register' && messageData.userId) {
-                registerUser(messageData.userId, ws);
+            if (messageData.type === 'register' && messageData.playerId) {
+                console.log(`🔄 Player registration detected: ${messageData.playerId}`);
+                registerUser(messageData.playerId, ws, messageData.playerId);
+                
                 ws.send(JSON.stringify({
                     type: 'register_response',
                     status: 'success',
-                    userId: messageData.userId,
-                    message: `User ${messageData.userId} registered successfully`,
+                    userId: messageData.playerId,
+                    playerId: messageData.playerId,
+                    message: `User ${messageData.playerId} registered successfully`,
+                    timestamp: new Date().toISOString()
+                }));
+                return;
+            }
+
+            // Handle admin registration
+            if (messageData.type === 'admin_register') {
+                console.log(`👑 Admin registration request received`);
+                
+                // Register admin using the unified registerUser function
+                const adminUserId = 'Admin';
+                registerUser(adminUserId, ws);
+                
+                console.log(`👑 Admin registered successfully`);
+                console.log(`👥 Total connected clients: ${connectedClients.size}`);
+                console.log(`👥 Total registered users: ${userConnections.size}`);
+                
+                ws.send(JSON.stringify({
+                    type: 'admin_register_response',
+                    status: 'success',
+                    userId: adminUserId,
+                    message: `Admin registered successfully`,
                     timestamp: new Date().toISOString()
                 }));
                 return;
@@ -489,20 +582,21 @@ server.on('connection', (ws, request) => {
                     return;
                 }
 
+                ///store the whole order informatino in a map called allOrders
+                //allOrders.set(messageData.playerId, messageData.orderData);
+                //console.log(`📋 -----All orders stored in map for player ${messageData.playerId}`);
+
                 try {
-                    // Pass the summary from orderData to registerExpectedInvoice
-                    const orderDataWithSummary = {
-                        ...messageData.orderData,
-                        summary: messageData.orderData?.summary
-                    };
+                    // Store expected invoice details in map
+                    expectedInvoices.set(messageData.invoiceNumber, {
+                        playerId: messageData.playerId,
+                        summary: messageData.orderData?.summary,
+                        orderData: messageData.orderData,
+                        registeredAt: new Date().toISOString()
+                    });
                     
-                    invoicePoller.registerExpectedInvoice(
-                        messageData.invoiceNumber,
-                        //HARDCODED FOR TESTING
-                        //'1003',
-                        messageData.playerId,
-                        orderDataWithSummary
-                    );
+                    console.log(`📋 Expected invoice ${messageData.invoiceNumber} stored in map for player ${messageData.playerId}`);
+                    console.log(`📋 Total expected invoices: ${expectedInvoices.size}`);
 
                     ws.send(JSON.stringify({
                         type: 'register_expected_invoice_response',
@@ -554,9 +648,11 @@ server.on('connection', (ws, request) => {
             
             // Process order events by forwarding to HTTP server
             if (messageData.type === 'order') {
-                console.log(`📦 Received order event from client`,messageData);
+                messageData.data.referenceNumber="1234567890";
+                console.log(`📦 Received order event from client`,JSON.stringify(messageData));
                 processOrder(messageData)
                     .then(response => {
+                        console.log("--++--Order response ", response);
                         // Send success response back to the client
                         ws.send(JSON.stringify({
                             type: 'order_response',
@@ -568,6 +664,10 @@ server.on('connection', (ws, request) => {
                             itemCount: messageData.items ? messageData.items.length : 0,
                             timestamp: new Date().toISOString()
                         }));
+                        orderdata = messageData;
+                        orderdata.invoiceNumber = response.data.backendResponse.po;
+                        allOrders.set(messageData.data.customerName, orderdata);
+                        console.log("------storing Order response for ",messageData.data.customerName , JSON.stringify(orderdata));
                     })
                     .catch(error => {
                         console.error('Failed to process order:', error.message);
@@ -638,6 +738,28 @@ server.on('connection', (ws, request) => {
                     });
                 return;
             }
+
+            // Handle admin_getOrder command from clients
+            if (messageData.type === 'admin_getOrder' && messageData.playerId) {
+                console.log(`📋 Admin order request received for player: ${messageData.playerId}`);
+                console.log(`📋 Current connection user: ${connectionUsers.get(ws)}`);
+                
+                // Store the player ID for invoice matching
+                currentAdminPlayer = messageData.playerId;
+                console.log(`📋 Current admin player set to: ${currentAdminPlayer}`);
+                console.log(`📋 Admin connection found: ${userConnections.has('Admin') ? 'Yes' : 'No'}`);
+                                
+                // Send response back to client
+                ws.send(JSON.stringify({
+                    type: 'admin_getOrder_response',
+                    status: 'success',
+                    playerId: messageData.playerId,
+                    order: allOrders.get(messageData.playerId),
+                    timestamp: new Date().toISOString()
+                }));
+                console.log(`📋 ------Admin order response sent to client for player ${messageData.playerId}, order: ${allOrders.get(messageData.playerId)}`);
+                return;
+            }
             
             //if receiving a command from admin-panel then process the command
             if (typeof messageData === 'object' && messageData !== null) {
@@ -665,7 +787,7 @@ server.on('connection', (ws, request) => {
     ws.on('close', (code, reason) => {
         connectedClients.delete(ws);
         unregisterUser(ws);
-        console.log(`🔌 Client disconnected (${code}): ${reason}`);
+        console.log(`🔌 Client ${connectionUsers.get(ws)} disconnected (${code}): ${reason}`);
         console.log(`👥 Total connected clients: ${connectedClients.size}`);
     });
 
