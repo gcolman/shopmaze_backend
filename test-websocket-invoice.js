@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const CONFIG = {
     serverUrl: 'wss://redhat-quest-websocket-route-demo-frontend.apps.cluster-h7sqb.h7sqb.sandbox182.opentlc.com/game-control',
     numUsers: 2, // Reduced for invoice testing
-    delayBetweenRegistrations: 10, // ms between user registrations
+    delayBetweenRegistrations: 1, // ms between user registrations
     delayBeforeOrders: 100, // ms after all registrations before starting orders
     delayBetweenOrders: 100, // ms between order submissions
     maxRetries: 3,
@@ -259,6 +259,7 @@ class InvoiceLoadTester {
         this.users = [];
         this.completedUsers = 0;
         this.startTime = Date.now();
+        this.usedPlayerIds = new Set(); // Track used player IDs
         this.results = {
             totalUsers: CONFIG.numUsers,
             successfulRegistrations: 0,
@@ -314,7 +315,7 @@ class InvoiceLoadTester {
         console.log('📝 Phase 1: Registering users...');
         
         for (let i = 0; i < CONFIG.numUsers; i++) {
-            const userId = this.generateLetterUsername(i);
+            const userId = this.generateUniquePlayerId(i);
             const user = new InvoiceTestUser(userId, this.onUserConnected.bind(this), this.onUserDisconnected.bind(this));
             
             try {
@@ -525,18 +526,35 @@ class InvoiceLoadTester {
     }
 
     // Utility methods
-    generateLetterUsername(index) {
+    generateUniquePlayerId(index) {
         const letters = 'abcdefghijklmnopqrstuvwxyz';
-        let username = '';
+        let baseUsername = '';
         let num = index;
         
         // Convert number to base-26 using letters
         do {
-            username = letters[num % 26] + username;
+            baseUsername = letters[num % 26] + baseUsername;
             num = Math.floor(num / 26);
         } while (num > 0);
         
-        return `invoiceUser${username}`;
+        let playerId = `invoiceUser${baseUsername}`;
+        let counter = 1;
+        
+        // Check if player ID is already taken and generate alternatives
+        while (this.usedPlayerIds.has(playerId)) {
+            playerId = `invoiceUser${baseUsername}_${counter}`;
+            counter++;
+            
+            // Prevent infinite loop (shouldn't happen with reasonable test sizes)
+            if (counter > 1000) {
+                playerId = `invoiceUser${baseUsername}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                break;
+            }
+        }
+        
+        // Mark this player ID as used
+        this.usedPlayerIds.add(playerId);
+        return playerId;
     }
 
     onUserConnected(user) {

@@ -196,6 +196,7 @@ class ParallelLoadTester {
         this.completedUsers = 0;
         this.startTime = Date.now();
         this.activeConnections = 0;
+        this.usedPlayerIds = new Set(); // Track used player IDs
         this.results = {
             totalUsers: CONFIG.numUsers,
             successfulRegistrations: 0,
@@ -305,7 +306,7 @@ class ParallelLoadTester {
         for (let i = 0; i < totalUsers; i += batchSize) {
             const batch = [];
             for (let j = i; j < Math.min(i + batchSize, totalUsers); j++) {
-                batch.push(this.generateLetterUsername(j));
+                batch.push(this.generateUniquePlayerId(j));
             }
             batches.push(batch);
         }
@@ -487,18 +488,35 @@ class ParallelLoadTester {
     }
 
     // Utility methods
-    generateLetterUsername(index) {
+    generateUniquePlayerId(index) {
         const letters = 'abcdefghijklmnopqrstuvwxyz';
-        let username = '';
+        let baseUsername = '';
         let num = index;
         
         // Convert number to base-26 using letters
         do {
-            username = letters[num % 26] + username;
+            baseUsername = letters[num % 26] + baseUsername;
             num = Math.floor(num / 26);
         } while (num > 0);
         
-        return `parallelUser${username}`;
+        let playerId = `parallelUser${baseUsername}`;
+        let counter = 1;
+        
+        // Check if player ID is already taken and generate alternatives
+        while (this.usedPlayerIds.has(playerId)) {
+            playerId = `parallelUser${baseUsername}_${counter}`;
+            counter++;
+            
+            // Prevent infinite loop (shouldn't happen with reasonable test sizes)
+            if (counter > 1000) {
+                playerId = `parallelUser${baseUsername}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                break;
+            }
+        }
+        
+        // Mark this player ID as used
+        this.usedPlayerIds.add(playerId);
+        return playerId;
     }
 
     onUserConnected(user) {
