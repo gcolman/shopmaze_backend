@@ -154,7 +154,7 @@ class WebSocketClient extends EventEmitter {
                 // Handle pong frames for heartbeat
                 this.ws.on('pong', () => {
                     this.lastPongReceived = new Date();
-                    //console.log(`💓 Received pong from server`);
+                    //console.log(`💓 Received pong from server, lastPongReceived updated`);
                 });
 
             } catch (error) {
@@ -292,8 +292,9 @@ class WebSocketClient extends EventEmitter {
             if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
                 // Check if we've received a pong recently
                 const timeSinceLastPong = new Date() - this.lastPongReceived;
+                console.log(`💓 Heartbeat check: timeSinceLastPong=${Math.round(timeSinceLastPong/1000)}s, threshold=${this.config.heartbeatInterval * 2/1000}s`);
                 if (timeSinceLastPong > this.config.heartbeatInterval * 2) {
-                    console.log(`⚠️ No pong received for ${Math.round(timeSinceLastPong/1000)}s, connection may be stale`);
+                    console.log(`⚠️ No pong received for ${Math.round(timeSinceLastPong/1000)}s, connection may be stale - terminating`);
                     this.ws.terminate(); // Force reconnection
                     return;
                 }
@@ -303,7 +304,7 @@ class WebSocketClient extends EventEmitter {
                     this.ws.ping();
                     //console.log(`💓 Sent ping to server`);
                 } catch (error) {
-                    console.error(`❌ Error sending ping: ${error.message}`);
+                    //console.error(`❌ Error sending ping: ${error.message}`);
                 }
             }
         }, this.config.heartbeatInterval);

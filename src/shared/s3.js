@@ -10,14 +10,26 @@ const { Client } = require('minio');
 class S3Client {
     constructor(config = {}) {
         // Default configuration - can be overridden by environment variables
-        this.config = {
+     /**   this.config = {
             endPoint: config.endPoint || process.env.MINIO_ENDPOINT || 'minio-api-demo.apps.cluster-75kk9.75kk9.sandbox2022.opentlc.com',
             port: parseInt(config.port || process.env.MINIO_PORT || '443'),
             useSSL: config.useSSL !== undefined ? config.useSSL : (process.env.MINIO_USE_SSL === 'true' || true),
             accessKey: config.accessKey || process.env.MINIO_ACCESS_KEY || 'iHWCo5WCIIBAehWIOZeO',
             secretKey: config.secretKey || process.env.MINIO_SECRET_KEY || 'SyUnBgvqxWUcmlwfY92u2HwY7cqUNWtkxu3rpsAM',
             region: config.region || process.env.MINIO_REGION || 'us-east-1'
+        };*/
+        console.log("BEFORE CONNECTING");
+        this.config = {
+            endPoint: config.endPoint || process.env.MINIO_ENDPOINT || 'minio-api-demo.apps.cluster-szfjs.dynamic.redhatworkshops.io',
+            //endPoint: config.endPoint || process.env.MINIO_ENDPOINT || 'http://minio-service.demo.svc.cluster.local:9000',
+            port: parseInt(config.port || process.env.MINIO_PORT || '443'),
+            useSSL: config.useSSL !== undefined ? config.useSSL : (process.env.MINIO_USE_SSL === 'true' || true),
+            accessKey: config.accessKey || process.env.MINIO_ACCESS_KEY || 'NlJSl2F6NvxXnHW4eNy7',
+            secretKey: config.secretKey || process.env.MINIO_SECRET_KEY || 'zbvCPik7Lwr6fI0gXpEeHTWNv7ZQAgpUYQzi5sqG',
+            region: config.region || process.env.MINIO_REGION || 'us-east-1'
         };
+
+
         this.client = null;
         this.connected = false;
     }
@@ -28,10 +40,11 @@ class S3Client {
      */
     async connect() {
         try {
-            console.log(`🔗 Connecting to MinIO server at ${this.config.endPoint}:${this.config.port}`);
+            console.log(`🔗  server at ${this.config.endPoint}:${this.config.port}`);
             
             this.client = new Client({
-                endPoint: this.config.endPoint,
+                //endPoint: this.config.endPoint,
+                endPoint: 'minio-api-demo.apps.cluster-szfjs.dynamic.redhatworkshops.io',
                 port: this.config.port,
                 useSSL: this.config.useSSL,
                 accessKey: this.config.accessKey,

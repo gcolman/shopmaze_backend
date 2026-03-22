@@ -15,7 +15,6 @@ class InvoicePoller {
         this.config = {
             pollingInterval: options.pollingInterval || 10000, // 10 seconds default
             bucketName: options.bucketName || process.env.INVOICE_BUCKET || 'invoices',
-            pollForInvoices: options.maxRetries !== undefined ? options.maxRetries : Infinity, // Poll indefinitely by default
             invoiceStorageDir: options.invoiceStorageDir || path.join(process.cwd(), 'invoices'), // Local storage directory
             ...options
         };
@@ -25,9 +24,7 @@ class InvoicePoller {
         this.isPolling = false;
         this.isConnected = false;
         this.invoiceProcessedCallback = null; // Callback function when invoice is processed
-        this.hasShownNoInvoicesMessage = false; // Flag to track if we've shown the "no invoices" message
-        this.processedInvoicesCache = new Set(); // Track invoice numbers that have been processed to avoid re-fetching
-        this.expectedInvoices = new Map(); // Track expected invoices: invoiceNumber -> { playerId, customerName, customerEmail, orderId, registeredAt }
+        this.processedFiles = new Map(); // Track processed files: filename -> { timestamp, invoiceNumber, playerId, notificationSent }
     }
 
     /**
@@ -40,7 +37,7 @@ class InvoicePoller {
             // Connect to S3
             await this.s3Client.connect();
             this.isConnected = true;
-            
+            console.log(`📄 >>> connected`);
             // Ensure invoice storage directory exists
             await this.ensureStorageDirectory();
             
@@ -48,10 +45,9 @@ class InvoicePoller {
             console.log(`📄 Polling bucket: ${this.config.bucketName}`);
             console.log(`📄 Invoice storage directory: ${this.config.invoiceStorageDir}`);
             console.log(`📄 Polling interval: ${this.config.pollingInterval}ms`);
-            console.log(`📄 Max retries: ${this.config.maxRetries === Infinity ? 'unlimited (polling indefinitely)' : this.config.maxRetries}`);
             
-            // Populate cache with existing invoices to avoid reprocessing
-            await this.populateProcessedCache();
+            // Load processed files from filesystem
+            await this.loadProcessedFiles();
             
             // Start continuous polling immediately
             this.startPolling();
@@ -65,30 +61,46 @@ class InvoicePoller {
     }
 
     /**
-     * Populate the processed invoices cache with existing invoices from filesystem
+     * Load processed files from filesystem to track what has been processed
      * @private
      */
-    async populateProcessedCache() {
+    async loadProcessedFiles() {
         try {
             const files = await fs.readdir(this.config.invoiceStorageDir);
-            let cacheCount = 0;
+            let loadedCount = 0;
             
             for (const file of files) {
                 if (file.endsWith('.json')) {
-                    // Extract invoice number from filename (remove .json extension)
-                    const invoiceNumber = file.replace('.json', '');
-                    this.processedInvoicesCache.add(invoiceNumber);
-                    cacheCount++;
+                    try {
+                        const filepath = path.join(this.config.invoiceStorageDir, file);
+                        const data = await fs.readFile(filepath, 'utf8');
+                        const invoiceData = JSON.parse(data);
+                        
+                        // Extract filename from s3Metadata or use a default
+                        const filename = invoiceData.s3Metadata?.s3Key || file.replace('.json', '');
+                        const timestamp = invoiceData.s3Metadata?.s3LastModified || invoiceData.processedAt;
+                        
+                        this.processedFiles.set(filename, {
+                            timestamp: timestamp,
+                            invoiceNumber: invoiceData.invoiceNumber || filename,
+                            playerId: invoiceData.playerId,
+                            processedAt: invoiceData.processedAt,
+                            notificationSent: true // Assume existing files have already had notifications sent
+                        });
+                        loadedCount++;
+                    } catch (error) {
+                        console.log(`⚠️ Could not load processed file ${file}: ${error.message}`);
+                    }
                 }
             }
             
-            console.log(`📋 Populated processed cache with ${cacheCount} existing invoices`);
+            console.log(`📋 Loaded ${loadedCount} processed files from filesystem`);
             
         } catch (error) {
             if (error.code === 'ENOENT') {
-                console.log(`📋 No existing invoices found - starting with empty cache`);
+                console.log(`📋 No existing invoices found - starting with empty processed files list`);
             } else {
-                console.error(`❌ Error populating processed cache: ${error.message}`);
+                console.error(`❌ Error loading processed files: ${error.message}`);
             }
         }
     }
@@ -100,80 +112,6 @@ class InvoicePoller {
     setInvoiceProcessedCallback(callback) {
         this.invoiceProcessedCallback = callback;
         console.log(`📄 Invoice processed callback registered`);
-    }
-
-    /**
-     * Register an expected invoice from order processing
-     * @param {string} invoiceNumber - The invoice number to expect
-     * @param {string} playerId - The player ID (customer email/name)
-     * @param {Object} orderData - Additional order data
-     */
-    registerExpectedInvoice(invoiceNumber, playerId, orderData = {}) {
-        if (!invoiceNumber || !playerId) {
-            console.error(`❌ Cannot register expected invoice: missing invoiceNumber (${invoiceNumber}) or playerId (${playerId})`);
-            return;
-        }
-
-        const expectedInvoiceData = {
-            playerId: playerId,
-            customerName: orderData.customerName || playerId,
-            customerEmail: orderData.customerEmail || playerId,
-            orderId: orderData.orderId,
-            totalAmount: orderData.totalAmount,
-            summary: orderData.summary,
-            registeredAt: new Date().toISOString()
-        };
-
-        this.expectedInvoices.set(invoiceNumber, expectedInvoiceData);
-        console.log(`📋 Registered expected invoice ${invoiceNumber} for player ${playerId}`);
-        console.log(`📋 Summary data stored:`, expectedInvoiceData.summary ? 'Yes' : 'No');
-        if (expectedInvoiceData.summary) {
-            console.log(`📋 Summary total: ${expectedInvoiceData.summary.totalAmount}`);
-        }
-        console.log(`📋 Total expected invoices: ${this.expectedInvoices.size}`);
-    }
-
-    /**
-     * Get the player ID for a given invoice number from expected invoices
-     * @param {string} invoiceNumber - The invoice number to look up
-     * @returns {string|null} Player ID if found, null if not found
-     */
-    getPlayerIdForInvoice(invoiceNumber) {
-        if (!invoiceNumber) {
-            console.error(`❌ Cannot get player ID: missing invoiceNumber`);
-            return null;
-        }
-
-        const expectedInvoiceData = this.expectedInvoices.get(invoiceNumber);
-        if (expectedInvoiceData) {
-            return expectedInvoiceData.playerId;
-        }
-
-        console.log(`📄 No expected invoice found for invoice number: ${invoiceNumber}`);
-        return null;
-    }
-
-    /**
-     * Get expected invoice data for a player (finds any expected invoice for the player)
-     * @param {string} playerId - The player ID to look up
-     * @returns {Object|null} Expected invoice data if found, null if not found
-     */
-    getExpectedInvoiceDataForPlayer(playerId) {
-        if (!playerId) {
-            console.error(`❌ Cannot get expected invoice data: missing playerId`);
-            return null;
-        }
-
-        // Look for any expected invoice for this player
-        for (const [invoiceNumber, expectedData] of this.expectedInvoices.entries()) {
-            if (expectedData.playerId === playerId) {
-                console.log(`📄 Found expected invoice ${invoiceNumber} for player ${playerId}`);
-                return expectedData;
-            }
-        }
-
-        console.log(`📄 No expected invoice found for player: ${playerId}`);
-        return null;
     }
 
     /**
@@ -401,26 +339,17 @@ class InvoicePoller {
     }
 
     /**
-     * Poll S3 bucket for all new invoices
+     * Poll S3 bucket for new invoices
      * @private
      */
     async pollForInvoices() {
-        //console.log(`🔍 Polling S3 bucket for new invoices...`);
-
         try {
-            // Get all objects in the bucket
+            // Get all objects in the bucket with timestamps
             const objects = await this.s3Client.listObjects(this.config.bucketName);
             
             if (objects.length === 0) {
-                if (!this.hasShownNoInvoicesMessage) {
-                    console.log(`📄 No invoices found in S3 bucket ${this.config.bucketName}`);
-                    this.hasShownNoInvoicesMessage = true;
-                }
                 return;
             }
-
-            // Reset the flag since we found invoices
-            this.hasShownNoInvoicesMessage = false;
             
             // Check each invoice file in the bucket
             for (const invoiceFile of objects) {
@@ -443,86 +372,88 @@ class InvoicePoller {
      */
     async checkAndProcessInvoiceFile(invoiceFile) {
         try {
-            // Extract invoice number from filename (assume it's part of the filename)
-            const invoiceNumber = this.extractInvoiceNumber(invoiceFile.name);
+            const filename = invoiceFile.name;
+            const timestamp = invoiceFile.lastModified;
             
+            // Check if this file and timestamp have already been processed
+            const existingEntry = this.processedFiles.get(filename);
+            if (existingEntry && existingEntry.timestamp.toString() === timestamp.toString() && existingEntry.notificationSent) {
+                // File and timestamp already processed and notification sent, do nothing
+               //console.log(filename, existingEntry.timestamp.toString(), existingEntry.notificationSent);
+                return;
+            }
+            
+            console.log(`📄 >>>>>>Found new invoice file: ${filename} (${timestamp})`);
+            
+            // Extract invoice number from filename
+            const invoiceNumber = this.extractInvoiceNumber(filename);
             if (!invoiceNumber) {
-                console.log(`⚠️ Could not extract invoice number from filename: ${invoiceFile.name}`);
+                console.log(`⚠️ Could not extract invoice number from filename: ${filename}`);
                 return;
             }
-
-            // Check if this invoice is expected - if not, skip it
-            const expectedInvoiceData = this.expectedInvoices.get(invoiceNumber);
-            if (!expectedInvoiceData) {
-                // Not an expected invoice, skip silently
-                return;
-            }
-
-            // Check cache first - if already processed, still notify client but don't reprocess
-            if (this.processedInvoicesCache.has(invoiceNumber)) {
-                console.log(`📄 Invoice ${invoiceNumber} already in cache - sending notification to player ${expectedInvoiceData.playerId}`);
-                
-                // Get existing invoice data from filesystem to send notification
-                const existingInvoice = await this.fetchInvoiceFromFilesystem(invoiceNumber);
-                console.log("EXISTING INVOICE", existingInvoice);
-                if (existingInvoice && this.invoiceProcessedCallback) {
-                    try {
-                        await this.invoiceProcessedCallback(invoiceNumber, existingInvoice);
-                        console.log(`✅ Sent notification for existing cached invoice ${invoiceNumber} to player ${expectedInvoiceData.playerId}`);
-                    } catch (callbackError) {
-                        console.error(`❌ Error sending notification for cached invoice: ${callbackError.message}`);
-                    }
-                }
-                
-                // Remove from expected invoices since notification has been sent
-                this.expectedInvoices.delete(invoiceNumber);
-                return;
-            }
-
-            // Check if already processed by looking in filesystem
-            const existingInvoice = await this.fetchInvoiceFromFilesystem(invoiceNumber);
-            if (existingInvoice) {
-                console.log(`📄 Invoice ${invoiceNumber} already exists in filesystem - sending notification to player ${expectedInvoiceData.playerId}`);
-                
-                // Add to cache for future checks
-                this.processedInvoicesCache.add(invoiceNumber);
-                
-                // Send notification to client even though invoice already exists
-                if (this.invoiceProcessedCallback) {
-                    try {
-                        await this.invoiceProcessedCallback(invoiceNumber, existingInvoice);
-                        console.log(`✅ Sent notification for existing filesystem invoice ${invoiceNumber} to player ${expectedInvoiceData.playerId}`);
-                    } catch (callbackError) {
-                        console.error(`❌ Error sending notification for existing invoice: ${callbackError.message}`);
-                    }
-                }
-                
-                // Remove from expected invoices since notification has been sent
-                this.expectedInvoices.delete(invoiceNumber);
-                return;
-            }
-
-            console.log(`📄 Found expected invoice file: ${invoiceFile.name} (Invoice: ${invoiceNumber}) for player ${expectedInvoiceData.playerId}`);
             
-            // Use the expected invoice data for processing
-            const registrationData = {
-                playerId: expectedInvoiceData.playerId,
-                customerName: expectedInvoiceData.customerName,
-                customerEmail: expectedInvoiceData.customerEmail,
-                orderId: expectedInvoiceData.orderId,
-                retryCount: 0,
-                registeredAt: expectedInvoiceData.registeredAt,
-                lastChecked: new Date().toISOString()
+            // Download and process the file
+            const pdfBuffer = await this.s3Client.getObject(this.config.bucketName, filename);
+            const base64Pdf = pdfBuffer.toString('base64');
+            
+            // Store the processed invoice
+            const processedData = {
+                invoiceNumber: invoiceNumber,
+                filename: filename,
+                fileSize: invoiceFile.size,
+                base64Data: base64Pdf,
+                processedAt: new Date().toISOString(),
+                s3Metadata: {
+                    s3Key: filename,
+                    s3Size: invoiceFile.size,
+                    s3LastModified: timestamp
+                }
             };
+            
+            // Save to filesystem
+            await this.saveInvoiceToFilesystem(invoiceNumber, processedData);
+            
+            // Check if this is a truly new file (not just a reprocess)
+            const isNewFile = !existingEntry || existingEntry.timestamp.toString() !== timestamp.toString();
+            console.log("isNewFile", isNewFile);
+            console.log("existingEntry", existingEntry ? "exists" : "null");
+            console.log("timestamp this/existing", timestamp, existingEntry?.timestamp);
+            console.log("timestamp types", typeof timestamp, typeof existingEntry?.timestamp);
+            console.log("filename this/existing", filename, existingEntry?.filename);
 
-            // Process and store the invoice
-            await this.processAndStoreInvoice(invoiceNumber, invoiceFile, registrationData);
+
+
+            // Add to processed files list
+            this.processedFiles.set(filename, {
+                filename: filename,
+                timestamp: timestamp,
+                invoiceNumber: invoiceNumber,
+                playerId: null, // Will be updated when invoice is requested
+                processedAt: processedData.processedAt,
+                notificationSent: false // Will be set to true after notification is sent
+            });
             
-            // Add to processed cache after successful processing
-            this.processedInvoicesCache.add(invoiceNumber);
-            
-            // Remove from expected invoices since it's been processed
-            this.expectedInvoices.delete(invoiceNumber);
+            console.log(`✅ Invoice ${invoiceNumber} processed and stored successfully`);
+            console.log(">>>>isNewFile<<<<<", isNewFile);
+            // Only send invoice ready event for truly new files
+            if (isNewFile && this.invoiceProcessedCallback) {
+                try {
+                    await this.invoiceProcessedCallback(invoiceNumber, processedData);
+                    
+                    // Mark notification as sent
+                    const updatedEntry = this.processedFiles.get(filename);
+                    if (updatedEntry) {
+                        updatedEntry.notificationSent = true;
+                        this.processedFiles.set(filename, updatedEntry);
+                    }
+                    
+                    console.log(`📤 Invoice ready notification sent for ${invoiceNumber}`);
+                } catch (callbackError) {
+                    console.error(`❌ Error sending invoice ready notification: ${callbackError.message}`);
+                }
+            } else if (!isNewFile) {
+                console.log(`📄 Invoice ${invoiceNumber} reprocessed but notification already sent`);
+            }
 
         } catch (error) {
             console.error(`❌ Error processing invoice file ${invoiceFile.name}: ${error.message}`);
@@ -640,13 +571,13 @@ class InvoicePoller {
      * Get status information
      */
     getStatus() {
-        const expectedInvoices = Array.from(this.expectedInvoices.entries()).map(([invoiceNumber, data]) => ({
-            invoiceNumber,
+        const processedFilesList = Array.from(this.processedFiles.entries()).map(([filename, data]) => ({
+            filename,
+            timestamp: data.timestamp,
+            invoiceNumber: data.invoiceNumber,
             playerId: data.playerId,
-            customerName: data.customerName,
-            orderId: data.orderId,
-            summary: data.summary,
-            registeredAt: data.registeredAt
+            processedAt: data.processedAt,
+            notificationSent: data.notificationSent
         }));
 
         return {
@@ -654,11 +585,9 @@ class InvoicePoller {
             isPolling: this.isPolling,
             bucketName: this.config.bucketName,
             pollingInterval: this.config.pollingInterval,
-            maxRetries: this.config.maxRetries === Infinity ? 'unlimited' : this.config.maxRetries,
             storageDir: this.config.invoiceStorageDir,
-            processedCacheSize: this.processedInvoicesCache.size,
-            expectedInvoicesCount: this.expectedInvoices.size,
-            expectedInvoices: expectedInvoices
+            processedFilesCount: this.processedFiles.size,
+            processedFiles: processedFilesList
         };
     }
 

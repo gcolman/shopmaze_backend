@@ -35,7 +35,8 @@ spec:
         - name: HTTP_PORT
           value: "8099"
         - name: HTTP_HOST
-          value: https://shopmaze-http-route-gcolman1-dev.apps.cluster-l7rns.l7rns.sandbox1431.opentlc.com
+          #value: https://shopmaze-http-route-redhat-quest.apps.cluster-mqxjv.mqxjv.sandbox4054.opentlc.com
+          value: https://shopmaze-http-route-demo-frontend.apps.cluster-szfjs.dynamic.redhatworkshops.io
         - name: WS_PORT
           value: "8080"
         - name: WS_SERVER
@@ -180,6 +181,9 @@ metadata:
   labels:
     app: shopmaze-websocket
     service: shopmaze-backend
+  name: redhat-quest-websocket-route
+  annotations:
+    haproxy.router.openshift.io/timeout: 3600s  
 spec:
   to:
     kind: Service
@@ -189,3 +193,5 @@ spec:
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
+
+

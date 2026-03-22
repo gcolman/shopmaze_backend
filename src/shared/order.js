@@ -8,8 +8,10 @@
 class OrderProcessor {
     constructor(config = {}) {
         this.config = {
-            backendUrl: config.backendUrl || process.env.BACKEND_ORDER_URL || 'https://mobile-backend-route-demo.apps.cluster-75kk9.75kk9.sandbox2022.opentlc.com/api/edi/purchase-order',
-            timeout: config.timeout || 30000,
+            //backendUrl: config.backendUrl || process.env.BACKEND_ORDER_URL || 'https://mobile-backend-route-demo.apps.cluster-75kk9.75kk9.sandbox2022.opentlc.com/api/edi/purchase-order',
+            //backendUrl: config.backendUrl || process.env.BACKEND_ORDER_URL || 'https://mobile-backend-route-demo.apps.cluster-mqxjv.mqxjv.sandbox4054.opentlc.com/api/edi/purchase-order',
+            backendUrl: config.backendUrl || process.env.BACKEND_ORDER_URL || 'http://mobile-backend-service.demo.svc.cluster.local/api/edi/purchase-order',
+            timeout: config.timeout || 100000,
             userAgent: config.userAgent || 'ShopMaze-Backend/1.0'
         };
     }

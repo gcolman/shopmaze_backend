@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 // Configuration
 const CONFIG = {
-    serverUrl: 'wss://redhat-quest-websocket-route-demo-frontend.apps.cluster-h7sqb.h7sqb.sandbox182.opentlc.com/game-control',
+    serverUrl: 'wss://redhat-quest-websocket-route-demo-frontend.apps.cluster-mqxjv.mqxjv.sandbox4054.opentlc.com/game-control',
     numUsers: 2, // Reduced for invoice testing
     delayBetweenRegistrations: 1, // ms between user registrations
     delayBeforeOrders: 100, // ms after all registrations before starting orders

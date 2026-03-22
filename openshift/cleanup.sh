@@ -14,6 +14,7 @@ NC='\033[0m' # No Color
 
 # Default values
 NAMESPACE="demo-frontend"
+#NAMESPACE="redhat-quest"
 FORCE=false
 
 # Function to display help
